@@ -4,6 +4,7 @@ from collections import defaultdict
 import numpy as np
 import matplotlib.pyplot as plt
 import cv2
+import uuid
 
 class Image(object):
     _ALLOWED_EXTENSIONS = ['JPG', 'JPEG', 'PNG']
@@ -13,6 +14,7 @@ class Image(object):
         self.keypoints = tuple()
         self.descriptors = np.empty((0,0))
         self.annotated_image = np.empty((0,0))
+        self.uid = str(uuid.uuid4())
 
     def from_file(self, filepath: str) -> None:
         self.original_image = cv2.imread(filepath)
@@ -20,8 +22,9 @@ class Image(object):
     def sift(self) -> None:
         sifter = cv2.xfeatures2d.SIFT_create()
         self.keypoints, self.descriptors = sifter.detectAndCompute(self.original_image, None)
-        self.annotated_image = cv2.drawKeypoints(
-            self.gray, self.keypoints, self.original_image
+        self.annotated_image = np.copy(self.original_image)
+        cv2.drawKeypoints(
+            self.gray, self.keypoints, self.annotated_image
         )
     
     def _show(self, type_: str = 'original') -> None:
@@ -60,6 +63,34 @@ class MatcherFlannBased(Matcher):
         self.matches = self.matcher.knnMatch(descriptor_1, descriptor_2, self.k)
         return self.matches
 
+class MatcherBruteForce(Matcher):
+    def __init__(self, norm_type: str = 'norm_l2', cross_check: bool = False, k: int = 2) -> None:
+        self.norm_type = norm_type
+        self.cross_check = cross_check
+        self.k = k                     
+
+        self.matcher = cv2.BFMatcher(self._enum, self.cross_check)
+        self.matches = tuple() 
+
+    @property
+    def _enum(self) -> int:
+        if self.norm_type == 'norm_l2':
+            return cv2.NORM_L2
+        elif self.norm_type =='norm_inf':
+            return cv2.NORM_INF
+        elif self.norm_type =='norm_l1':
+            return cv2.NORM_L1  
+        elif self.norm_type =='norm_l2sqr':
+            return cv2.NORM_L2SQR    
+        elif self.norm_type =='norm_hamming':
+            return cv2.NORM_HAMMING
+        elif self.norm_type =='norm_hamming2':
+            return cv2.NORM_HAMMING2                         
+
+    def match(self, descriptor_1: np.ndarray, descriptor_2: np.ndarray) -> Tuple:
+        self.matches = self.matcher.knnMatch(descriptor_1, descriptor_2, self.k)
+        return self.matches               
+
 class Homographer(object):
     def __init__(self, method: str, minimum_match_count: int) -> None:
         self.method = method
@@ -87,6 +118,18 @@ class HomographerRansac(Homographer):
                                     self.reprojection_threshold)
         return self.matrix, self.mask
 
+class HomographerLMeDS(Homographer):
+    def __init__(self, minimum_match_count: int = 10) -> None:
+        super().__init__('lmeds', minimum_match_count)
+        self.matrix = np.empty((0,0))
+        self.mask = np.empty((0,0))
+
+    def find_homography(self, source_points: np.ndarray, 
+        destination_points: np.ndarray) -> Tuple:
+        self.matrix, self.mask = cv2.findHomography(source_points, 
+                                    destination_points, cv2.LMEDS)
+        return self.matrix, self.mask        
+
 # class Detector(object):
 #     def __init__(self, method: str = 'sift') -> None:
 #         self.method = method.strip().lower()
@@ -107,6 +150,7 @@ class ImagePairs(object):
         self.annotated_match = defaultdict(lambda: np.empty((0,0)))
         self.homograph = defaultdict(list) # matrix, mask, transformed_perspective
         self.stitched = defaultdict(lambda: np.empty((0,0)))
+        self.uid = uuid.uuid4()
     
     def load_images(self) -> bool:
         pairs = defaultdict(list)
@@ -136,17 +180,32 @@ class ImagePairs(object):
                 for img in images:
                     img.sift()
 
-    def show_annotations(self, pair_id: str='') -> None:
+    def show_annotations(self, pair_id: str='',
+            output_directory: str = '') -> None:
         if pair_id:
             images = self.pair[pair_id]
             fig, axes = plt.subplot(1,2)
             for i in range(len(images)):
-                axes[i].imshow(images[i].original_image)
+                axes[i].imshow(images[i].annotated_image)
+            if output_directory:
+                filepath = os.path.join(
+                    output_directory, 'annotated_image_{pair_id}_{uid}.png'.format(
+                        pair_id=pair_id, uid=self.uid
+                    )
+                )
+                fig.savefig(filepath)
         else:
             for pair_id, images in self.pairs.items():
                 fig, axes = plt.subplots(1, 2)
                 for i in range(len(images)):
-                    axes[i].imshow(images[i].original_image)
+                    axes[i].imshow(images[i].annotated_image)
+                if output_directory:
+                    filepath = os.path.join(
+                        output_directory, 'annotated_image_{pair_id}_{uid}.png'.format(
+                            pair_id=pair_id, uid=self.uid
+                        )
+                    )
+                    fig.savefig(filepath)
 
     def match_descriptors_and_annotate(self, matcher: Matcher, threshold: float = 0.7, pair_id: str = ''):
         if pair_id:
@@ -193,17 +252,29 @@ class ImagePairs(object):
             output_directory:str='') -> None:
         if pair_id:
             fig, axes = plt.subplots(1, 1, figsize=(16,8))
-            axes[0].imshow(cv2.cvtColor(self.annotated_match[pair_id], cv2.COLOR_BGR2RGB))
+            axes.imshow(cv2.cvtColor(self.annotated_match[pair_id], cv2.COLOR_BGR2RGB))
+            if output_directory:
+                filepath = os.path.join(
+                    output_directory, 'annotated_match_{pair_id}_{uid}.png'.format(
+                        pair_id=pair_id, uid=self.uid
+                    )
+                )
+                fig.savefig(filepath)
 
-        else:
-            fig, axes = plt.subplots(len(self.annotated_match), 1, figsize=(16,32))
-            counter = 0
+        else:            
             for pair_id, good_match in self.annotated_match.items():
-                axes[counter].imshow(cv2.cvtColor(good_match, cv2.COLOR_BGR2RGB))
-                counter += 1
+                fig, axes = plt.subplots(1, 1, figsize=(16,8))
+                axes.imshow(cv2.cvtColor(good_match, cv2.COLOR_BGR2RGB))
+                if output_directory:
+                    filepath = os.path.join(
+                        output_directory, 'annotated_match_{pair_id}_{uid}.png'.format(
+                            pair_id=pair_id, uid=self.uid
+                        )
+                    )
+                    fig.savefig(filepath)                
+                
 
-        if output_directory:
-            filepath = os.path.join(output_directory, 'annotated_match.png')
+
 
     def find_homography(self, homographer: Homographer,
         pair_id: str = '') -> np.ndarray:
@@ -278,11 +349,19 @@ class ImagePairs(object):
                 None,
                 **params                                
             )
-            axes[0].imshow(image_3, 'gray')
-        else:
-            fig, axes = plt.subplots(len(self.homograph), 1, figsize=(16,int(8*len(self.homograph))))
-            counter = 0
+            axes.imshow(cv2.cvtColor(image_3, cv2.COLOR_BGR2RGB))
+            if output_directory:
+                filepath = os.path.join(
+                    output_directory, 'homography_{pair_id}_{uid}.png'.format(
+                        pair_id=pair_id, uid=self.uid
+                    )
+                )
+                fig.savefig(filepath)
+
+
+        else:            
             for pair_id, homography_transformation in self.homograph.items():
+                fig, axes = plt.subplots(1, 1, figsize=(16,8))
                 image_2 = self.pairs[pair_id][1].original_image
                 image_2 = cv2.polylines(
                     image_2, [np.int32(homography_transformation[2])], True, 255, 3, cv2.LINE_AA
@@ -302,10 +381,16 @@ class ImagePairs(object):
                     None,
                     **params                                
                 )
-                axes[counter].imshow(image_3, 'gray')
-                counter += 1
+                axes.imshow(cv2.cvtColor(image_3, cv2.COLOR_BGR2RGB))
+                if output_directory:
+                    filepath = os.path.join(
+                        output_directory, 'homography_{pair_id}_{uid}.png'.format(
+                            pair_id=pair_id, uid=self.uid
+                        )
+                    )
+                    fig.savefig(filepath)
 
-    def stitch(self, alpha: float = 0.5, pair_id: str = '') -> None:
+    def stitch(self, alpha: float = 0.25, pair_id: str = '') -> None:
         if pair_id:
             homography_transformation = self.homograph[pair_id]
             result = cv2.warpPerspective(
@@ -327,14 +412,26 @@ class ImagePairs(object):
                 stitched_image = cv2.addWeighted(result, alpha, self.pairs[pair_id][1].original_image, 1-alpha, 0)
                 self.stitched[pair_id] = stitched_image
 
-    def show_stitched(self, pair_id: str = '') -> None:
+    def show_stitched(self, pair_id: str = '',
+            output_directory: str = '') -> None:
         if pair_id:
             fig, axes = plt.subplots(len(self.stitched), 1, figsize=(16,8)) 
-            axes[0].imshow(cv2.cvtColor(self.stitched[pair_id], cv2.COLOR_BGR2RGB))       
+            axes.imshow(cv2.cvtColor(self.stitched[pair_id], cv2.COLOR_BGR2RGB))    
+            if output_directory:
+                filepath = os.path.join(
+                    output_directory, 'stitched_{pair_id}_{uid}.png'.format(
+                        pair_id=pair_id, uid=self.uid
+                    )
+                )
+                fig.savefig(filepath)               
         else:
-            fig, axes = plt.subplots(len(self.stitched), 1, figsize=(16,int(8*len(self.stitched))))            
-            counter = 0
             for pair_id, stitched_image in self.stitched.items():
-                axes[counter].imshow(cv2.cvtColor(stitched_image, cv2.COLOR_BGR2RGB))
-                counter += 1
-            fig.savefig('stitched.png')
+                fig, axes = plt.subplots(1, 1, figsize=(16,8))            
+                axes.imshow(cv2.cvtColor(stitched_image, cv2.COLOR_BGR2RGB))
+                if output_directory:
+                    filepath = os.path.join(
+                        output_directory, 'stitched_{pair_id}_{uid}.png'.format(
+                            pair_id=pair_id, uid=self.uid
+                        )
+                    )
+                    fig.savefig(filepath)  
