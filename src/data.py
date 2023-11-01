@@ -201,6 +201,7 @@ class ImagePairs(object):
             img = Image()
             img.from_file(filepath)
             self.pairs[n].append(img)
+        return True
 
     def detect_features_and_annotate(self, with_difference_of_gaussians: bool = False, pair_id: str='') -> None:
         if pair_id:
