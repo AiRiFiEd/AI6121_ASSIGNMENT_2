@@ -2,9 +2,57 @@ import os
 from typing import Any, Dict, List, Tuple
 from collections import defaultdict
 import numpy as np
+import math
 import matplotlib.pyplot as plt
 import cv2
 import uuid
+
+class DifferenceOfGaussians(object):
+    def __init__(self, radius: int = 5, sigma: float = 1.6):
+        self.radius = radius
+        self.sigma = sigma   
+        self.pi = math.pi
+        
+    def gaussian(self, x: float , y: float) -> float:
+        result_1 = 1/ (2 * self.pi * self.sigma * self.sigma)
+        result_2 = np.exp( -(x*x + y*y) / (2 * self.sigma * self.sigma) )
+        return result_1 * result_2
+    
+    def template(self) -> float:
+        side_length = self.radius*2 + 1
+        result = np.zeros((side_length, side_length))
+        for i in range(side_length):
+            for j in range(side_length):
+                result[i,j]=self.gaussian(i-self.radius, j-self.radius)
+        all = result.sum()
+        return result / all    
+    
+    def filter(self, image: np.ndarray, template: float) -> np.ndarray: 
+        # arr=np.array(image)
+        height = image.shape[0]
+        width = image.shape[1]
+        new_image = np.zeros((height, width))
+        for i in range(self.radius, height-self.radius):
+            for j in range(self.radius, width-self.radius):
+                t = image[i-self.radius : i+self.radius+1, j-self.radius : j+self.radius+1]
+                a = np.multiply(t, template)
+                new_image[i, j] = a.sum()
+        return new_image
+    
+    def diff(self, image: np.ndarray) -> np.ndarray:
+        temp = self.template()
+        
+        image2 = self.filter(image, temp)
+        image3 = self.filter(image2, temp)
+        image4 = self.filter(image3, temp)
+        
+        result = np.zeros([3, image.shape[0], image.shape[1]], dtype = float)
+        result[0, :, :] = image - image2
+        result[1, :, :] = image2 - image3
+        result[2, :, :] = image3 - image4
+
+        return result
+
 
 class Image(object):
     _ALLOWED_EXTENSIONS = ['JPG', 'JPEG', 'PNG']
@@ -19,9 +67,16 @@ class Image(object):
     def from_file(self, filepath: str) -> None:
         self.original_image = cv2.imread(filepath)
 
-    def sift(self) -> None:
+    def sift(self, with_difference_of_gaussians: bool = False) -> None:
         sifter = cv2.xfeatures2d.SIFT_create()
-        self.keypoints, self.descriptors = sifter.detectAndCompute(self.original_image, None)
+        if with_difference_of_gaussians:
+            difference_of_gaussians = DifferenceOfGaussians()
+            diff = difference_of_gaussians.diff(self.gray)
+            diff = diff.transpose(1, 2, 0)
+            self.keypoints, self.descriptors = sifter.detectAndCompute(diff.astype('uint8'), None)
+        else:
+            self.keypoints, self.descriptors = sifter.detectAndCompute(self.original_image, None)
+        
         self.annotated_image = np.copy(self.original_image)
         cv2.drawKeypoints(
             self.gray, self.keypoints, self.annotated_image
@@ -170,15 +225,15 @@ class ImagePairs(object):
     #         cv2.imwrite(filepath, self.original_image)     
 
 
-    def detect_features_and_annotate(self, pair_id: str='') -> None:
+    def detect_features_and_annotate(self, with_difference_of_gaussians: bool = False, pair_id: str='') -> None:
         if pair_id:
             images = self.pairs[pair_id]
             for img in images:
-                img.sift()
+                img.sift(with_difference_of_gaussians)
         else:
             for pair_id, images in self.pairs.items():
                 for img in images:
-                    img.sift()
+                    img.sift(with_difference_of_gaussians)
 
     def show_annotations(self, pair_id: str='',
             output_directory: str = '') -> None:
@@ -390,32 +445,77 @@ class ImagePairs(object):
                     )
                     fig.savefig(filepath)
 
-    def stitch(self, alpha: float = 0.25, pair_id: str = '') -> None:
+    def stitch(self, blend: bool = False, alpha: float = 0.5,  pair_id: str = '') -> None:
         if pair_id:
             homography_transformation = self.homograph[pair_id]
+            h1, w1 = self.pairs[pair_id][1].original_image.shape[:2]
+            h2, w2 = self.pairs[pair_id][0].original_image.shape[:2]
+
+            corners_1 = np.float32([[0, 0], [0, h1], [w1, h1], [w1, 0]]).reshape(-1, 1, 2)
+            corners_1 = np.float32([[0, 0], [0, h1], [w1, h1], [w1, 0]]).reshape(-1, 1, 2)
+            warped_corners_2 = homography_transformation[2]
+
+            corners = np.concatenate((corners_1, warped_corners_2), axis=0)
+            [x_min, y_min] = np.int32(corners.min(axis=0).ravel() - 0.5)
+            [x_max, y_max] = np.int32(corners.max(axis=0).ravel() + 0.5)
+
+            t = [-x_min, -y_min]
+            homograph_t = np.array([[1, 0, t[0]], [0, 1, t[1]], [0, 0, 1]])
+
             result = cv2.warpPerspective(
                 self.pairs[pair_id][0].original_image,
-                homography_transformation[0],
-                (self.pairs[pair_id][1].original_image.shape[1], 
-                    self.pairs[pair_id][1].original_image.shape[0])
+                homograph_t @ homography_transformation[0],
+                (x_max - x_min, y_max - y_min )
             )
-            stitched_image = cv2.addWeighted(result, alpha, self.pairs[pair_id][1].original_image, 1-alpha, 0)
-            self.stitched[pair_id] = stitched_image
+            result[t[1]:h1 + t[1], t[0]:w1 + t[0]] = self.pairs[pair_id][1].original_image
+            padded_image_2 = np.zeros(shape=result.shape)
+            padded_image_2[t[1]:h1 + t[1], t[0]:w1 + t[0]] = self.pairs[pair_id][1].original_image
+            if blend:
+                # mask = np.where(result != 0, 1, 0).astype(np.float32)
+                # blended_image = result * mask + self.pairs[pair_id][1].original_image * (1 - mask)
+                self.stitched[pair_id] = cv2.addWeighted(result, alpha, padded_image_2.astype(np.uint8), 1-alpha, 0)
+            else:
+                self.stitched[pair_id] = result
         else:
             for pair_id, homography_transformation in self.homograph.items():
+                # xh = np.linalg.inv(homography_transformation[0])
+                # f1 = np.dot(xh, np.array([0,0,1]))
+                # f1 = f1/f1[-1]
+                h1, w1 = self.pairs[pair_id][1].original_image.shape[:2]
+                h2, w2 = self.pairs[pair_id][0].original_image.shape[:2]
+
+                corners_1 = np.float32([[0, 0], [0, h1], [w1, h1], [w1, 0]]).reshape(-1, 1, 2)
+                corners_1 = np.float32([[0, 0], [0, h1], [w1, h1], [w1, 0]]).reshape(-1, 1, 2)
+                warped_corners_2 = homography_transformation[2]
+
+                corners = np.concatenate((corners_1, warped_corners_2), axis=0)
+                [x_min, y_min] = np.int32(corners.min(axis=0).ravel() - 0.5)
+                [x_max, y_max] = np.int32(corners.max(axis=0).ravel() + 0.5)
+
+                t = [-x_min, -y_min]
+                homograph_t = np.array([[1, 0, t[0]], [0, 1, t[1]], [0, 0, 1]])
+
                 result = cv2.warpPerspective(
                     self.pairs[pair_id][0].original_image,
-                    homography_transformation[0],
-                    (self.pairs[pair_id][1].original_image.shape[1], 
-                        self.pairs[pair_id][1].original_image.shape[0])
+                    homograph_t @ homography_transformation[0],
+                    (x_max - x_min, y_max - y_min )
                 )
-                stitched_image = cv2.addWeighted(result, alpha, self.pairs[pair_id][1].original_image, 1-alpha, 0)
-                self.stitched[pair_id] = stitched_image
+                result[t[1]:h1 + t[1], t[0]:w1 + t[0]] = self.pairs[pair_id][1].original_image
+                padded_image_2 = np.zeros(shape=result.shape)
+                padded_image_2[t[1]:h1 + t[1], t[0]:w1 + t[0]] = self.pairs[pair_id][1].original_image
+                if blend:
+                    # mask = np.where(result != 0, 1, 0).astype(np.float32)
+                    # blended_image = result * mask + self.pairs[pair_id][1].original_image * (1 - mask)
+                    self.stitched[pair_id] = cv2.addWeighted(result, alpha, padded_image_2.astype(np.uint8), 1-alpha, 0)
+                else:
+                    self.stitched[pair_id] = result
+                #stitched_image = cv2.addWeighted(result, alpha, self.pairs[pair_id][1].original_image, 1-alpha, 0)
+                #self.stitched[pair_id] = stitched_image
 
     def show_stitched(self, pair_id: str = '',
             output_directory: str = '') -> None:
         if pair_id:
-            fig, axes = plt.subplots(len(self.stitched), 1, figsize=(16,8)) 
+            fig, axes = plt.subplots(1, 1, figsize=(16,8)) 
             axes.imshow(cv2.cvtColor(self.stitched[pair_id], cv2.COLOR_BGR2RGB))    
             if output_directory:
                 filepath = os.path.join(
