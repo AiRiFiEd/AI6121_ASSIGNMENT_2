@@ -28,7 +28,6 @@ class DifferenceOfGaussians(object):
         return result / all    
     
     def filter(self, image: np.ndarray, template: float) -> np.ndarray: 
-        # arr=np.array(image)
         height = image.shape[0]
         width = image.shape[1]
         new_image = np.zeros((height, width))
@@ -96,9 +95,6 @@ class Image(object):
         return cv2.cvtColor(self.original_image, cv2.COLOR_BGR2GRAY)
 
 class Matcher(object):
-    #https://docs.opencv.org/3.4/d1/de0/tutorial_py_feature_homography.html
-    #https://docs.opencv.org/3.4/d5/d6f/tutorial_feature_flann_matcher.html
-    #https://kushalvyas.github.io/stitching.html
     def __init__(self, method: str) -> None:
         self.method = method
     
@@ -185,18 +181,6 @@ class HomographerLMeDS(Homographer):
                                     destination_points, cv2.LMEDS)
         return self.matrix, self.mask        
 
-# class Detector(object):
-#     def __init__(self, method: str = 'sift') -> None:
-#         self.method = method.strip().lower()
-#         self.detector = self._get_detector(self.method)
-    
-#     def _get_detector(self, method: str) -> Any:
-#         if method == 'sift':
-#             return cv2.xfeatures2d.SIFT_create()
-
-#     def detect(self, image: np.ndarray):
-#         return self.detector.detectAndCompute(image, None)
-
 class ImagePairs(object):
     def __init__(self, directory: str) -> None:
         self.directory = directory
@@ -217,13 +201,6 @@ class ImagePairs(object):
             img = Image()
             img.from_file(filepath)
             self.pairs[n].append(img)
-
-    # def save(self, directory: str, type_: str = 'annotated_match') -> None:
-    #     if type_ == 'annotated_match':
-    #         for pair_id, annotation in self.annotated_match.items():
-
-    #         cv2.imwrite(filepath, self.original_image)     
-
 
     def detect_features_and_annotate(self, with_difference_of_gaussians: bool = False, pair_id: str='') -> None:
         if pair_id:
@@ -328,9 +305,6 @@ class ImagePairs(object):
                     )
                     fig.savefig(filepath)                
                 
-
-
-
     def find_homography(self, homographer: Homographer,
         pair_id: str = '') -> np.ndarray:
         if pair_id:
@@ -471,16 +445,11 @@ class ImagePairs(object):
             padded_image_2 = np.zeros(shape=result.shape)
             padded_image_2[t[1]:h1 + t[1], t[0]:w1 + t[0]] = self.pairs[pair_id][1].original_image
             if blend:
-                # mask = np.where(result != 0, 1, 0).astype(np.float32)
-                # blended_image = result * mask + self.pairs[pair_id][1].original_image * (1 - mask)
                 self.stitched[pair_id] = cv2.addWeighted(result, alpha, padded_image_2.astype(np.uint8), 1-alpha, 0)
             else:
                 self.stitched[pair_id] = result
         else:
             for pair_id, homography_transformation in self.homograph.items():
-                # xh = np.linalg.inv(homography_transformation[0])
-                # f1 = np.dot(xh, np.array([0,0,1]))
-                # f1 = f1/f1[-1]
                 h1, w1 = self.pairs[pair_id][1].original_image.shape[:2]
                 h2, w2 = self.pairs[pair_id][0].original_image.shape[:2]
 
@@ -504,13 +473,9 @@ class ImagePairs(object):
                 padded_image_2 = np.zeros(shape=result.shape)
                 padded_image_2[t[1]:h1 + t[1], t[0]:w1 + t[0]] = self.pairs[pair_id][1].original_image
                 if blend:
-                    # mask = np.where(result != 0, 1, 0).astype(np.float32)
-                    # blended_image = result * mask + self.pairs[pair_id][1].original_image * (1 - mask)
                     self.stitched[pair_id] = cv2.addWeighted(result, alpha, padded_image_2.astype(np.uint8), 1-alpha, 0)
                 else:
                     self.stitched[pair_id] = result
-                #stitched_image = cv2.addWeighted(result, alpha, self.pairs[pair_id][1].original_image, 1-alpha, 0)
-                #self.stitched[pair_id] = stitched_image
 
     def show_stitched(self, pair_id: str = '',
             output_directory: str = '') -> None:
